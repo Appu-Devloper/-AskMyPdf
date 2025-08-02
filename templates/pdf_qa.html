@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>PDF Q&A Assistant</title>
+<style>
+    body {
+        margin: 0;
+        font-family: 'Segoe UI', sans-serif;
+        background: #f5f5f5;
+        color: #333;
+        display: flex;
+        height: 100vh;
+    }
+    .container {
+        display: flex;
+        flex: 1;
+        overflow: hidden;
+    }
+    #pdf-section, #chat-section {
+        padding: 20px;
+        border-radius: 8px;
+    }
+    #pdf-section {
+        width: 40%;
+        background: white;
+        display: flex;
+        flex-direction: column;
+        border-right: 1px solid #ccc;
+    }
+    #drop-area {
+        border: 2px dashed #aaa;
+        padding: 20px;
+        text-align: center;
+        border-radius: 10px;
+        cursor: pointer;
+        transition: 0.3s;
+    }
+    #drop-area:hover {
+        border-color: #007BFF;
+        background: #f9f9ff;
+    }
+    #pdfText {
+        flex: 1;
+        margin-top: 10px;
+        overflow-y: auto;
+        background: #fafafa;
+        padding: 10px;
+        border-radius: 5px;
+        white-space: pre-wrap;
+    }
+    #chat-section {
+        width: 60%;
+        display: flex;
+        flex-direction: column;
+        background: #fefefe;
+    }
+    #messages {
+        flex: 1;
+        padding: 15px;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+    }
+    .msg {
+        max-width: 75%;
+        margin-bottom: 12px;
+        padding: 12px 15px;
+        border-radius: 12px;
+        line-height: 1.5;
+        animation: fadeIn 0.3s ease-in-out;
+        position: relative;
+    }
+    .msg.user {
+        background: linear-gradient(135deg, #007BFF, #0056b3);
+        color: white;
+        align-self: flex-end;
+        box-shadow: 0 3px 8px rgba(0,0,0,0.2);
+    }
+    .msg.bot {
+        background: #eaeaea;
+        align-self: flex-start;
+        box-shadow: 0 3px 8px rgba(0,0,0,0.1);
+    }
+    .timestamp {
+        font-size: 0.75em;
+        color: #777;
+        margin-top: 3px;
+        display: block;
+        text-align: right;
+    }
+    #input-area {
+        display: flex;
+        border-top: 1px solid #ccc;
+        padding: 10px;
+        background: white;
+    }
+    #question {
+        flex: 1;
+        padding: 10px;
+        border: 1px solid #ccc;
+        border-radius: 8px;
+        outline: none;
+        font-size: 1em;
+    }
+    #send-btn {
+        margin-left: 10px;
+        padding: 10px 20px;
+        background: #007BFF;
+        color: white;
+        border: none;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: background 0.3s;
+    }
+    #send-btn:hover {
+        background: #0056b3;
+    }
+    #loading {
+        display: none;
+        margin-top: 10px;
+        text-align: center;
+    }
+    .spinner {
+        border: 4px solid #ccc;
+        border-top: 4px solid #007BFF;
+        border-radius: 50%;
+        width: 25px;
+        height: 25px;
+        animation: spin 1s linear infinite;
+        display: inline-block;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px);} to { opacity: 1; transform: translateY(0);} }
+    /* Typing indicator */
+    .typing {
+        display: flex;
+        align-items: center;
+        margin: 5px 0;
+    }
+    .typing span {
+        width: 6px;
+        height: 6px;
+        background: #555;
+        border-radius: 50%;
+        display: inline-block;
+        margin: 0 2px;
+        animation: bounce 1s infinite ease-in-out;
+    }
+    .typing span:nth-child(2) { animation-delay: 0.2s; }
+    .typing span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes bounce {
+        0%, 80%, 100% { transform: scale(0.8); }
+        40% { transform: scale(1); }
+    }
+</style>
+</head>
+<body>
+<div class="container">
+    <!-- PDF Upload Section -->
+    <div id="pdf-section">
+        <h2>📄 Upload PDF</h2>
+        <div id="drop-area">
+            Drag & Drop PDF here or Click to Upload
+            <input type="file" id="pdfInput" accept="application/pdf" hidden>
+        </div>
+        <div id="loading"><div class="spinner"></div> Extracting text...</div>
+        <pre id="pdfText"></pre>
+    </div>
+
+    <!-- Chat Section -->
+    <div id="chat-section">
+        <h2 style="padding: 15px;">💬 Chat About PDF</h2>
+        <div id="messages"></div>
+        <div id="input-area">
+            <input type="text" id="question" placeholder="Ask a question...">
+            <button id="send-btn">Send</button>
+        </div>
+    </div>
+</div>
+
+<script>
+const dropArea = document.getElementById("drop-area");
+const pdfInput = document.getElementById("pdfInput");
+const loading = document.getElementById("loading");
+const pdfText = document.getElementById("pdfText");
+const messages = document.getElementById("messages");
+const sendBtn = document.getElementById("send-btn");
+const questionInput = document.getElementById("question");
+
+dropArea.addEventListener("click", () => pdfInput.click());
+pdfInput.addEventListener("change", uploadPDF);
+dropArea.addEventListener("dragover", e => { e.preventDefault(); dropArea.style.borderColor = "#007BFF"; });
+dropArea.addEventListener("dragleave", e => { dropArea.style.borderColor = "#aaa"; });
+dropArea.addEventListener("drop", e => {
+    e.preventDefault();
+    dropArea.style.borderColor = "#aaa";
+    const file = e.dataTransfer.files[0];
+    if (file) uploadPDF({ target: { files: [file] } });
+});
+
+function uploadPDF(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const formData = new FormData();
+    formData.append("pdf", file);
+
+    loading.style.display = "block";
+    fetch("/upload", { method: "POST", body: formData })
+        .then(res => res.json())
+        .then(data => {
+            loading.style.display = "none";
+            if (data.text) {
+                pdfText.textContent = data.text;
+            } else {
+                pdfText.textContent = "❌ Failed to extract text.";
+            }
+        });
+}
+
+sendBtn.addEventListener("click", sendQuestion);
+questionInput.addEventListener("keypress", e => { if (e.key === "Enter") sendQuestion(); });
+
+function sendQuestion() {
+    const question = questionInput.value.trim();
+    if (!question) return;
+    addMessage("user", question);
+    questionInput.value = "";
+
+    // Show typing indicator
+    const typingEl = document.createElement("div");
+    typingEl.className = "typing bot";
+    typingEl.innerHTML = "<span></span><span></span><span></span>";
+    messages.appendChild(typingEl);
+    messages.scrollTop = messages.scrollHeight;
+
+    fetch("/ask", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question })
+    })
+    .then(res => res.json())
+    .then(data => {
+        typingEl.remove();
+        addMessage("bot", data.answer);
+    });
+}
+
+function addMessage(sender, text) {
+    const msg = document.createElement("div");
+    msg.className = `msg ${sender}`;
+    msg.innerHTML = text + `<span class="timestamp">${new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>`;
+    messages.appendChild(msg);
+    messages.scrollTop = messages.scrollHeight;
+}
+</script>
+</body>
+</html>

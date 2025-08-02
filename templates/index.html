@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>AI PDF Insights</title>
+<style>
+    body {
+        margin: 0;
+        font-family: 'Segoe UI', sans-serif;
+        background: #111;
+        color: white;
+        overflow: hidden;
+    }
+
+    /* Progress bar */
+    .progress {
+        height: 4px;
+        background: #333;
+        width: 80%;
+        margin: 20px auto;
+        border-radius: 2px;
+        position: relative;
+    }
+    .progress-bar {
+        height: 100%;
+        background: #007BFF;
+        width: 0;
+        border-radius: 2px;
+        transition: width 0.6s ease;
+    }
+
+    /* Slide container */
+    .slide-container {
+        display: flex;
+        height: 100vh;
+        transition: transform 0.8s ease-in-out;
+    }
+    .slide {
+        flex: 0 0 100%;
+        display: flex;
+        animation: fadeIn 0.6s ease;
+    }
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(20px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Left / Right panels */
+    .left {
+        flex: 1;
+        padding: 40px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #1a1a1a;
+        animation: slideInLeft 0.8s ease;
+    }
+    .right {
+        flex: 1;
+        padding: 40px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        background: #fff;
+        color: black;
+        animation: slideInRight 0.8s ease;
+    }
+    @keyframes slideInLeft {
+        from { transform: translateX(-50px); opacity: 0; }
+        to { transform: translateX(0); opacity: 1; }
+    }
+    @keyframes slideInRight {
+        from { transform: translateX(50px); opacity: 0; }
+        to { transform: translateX(0); opacity: 1; }
+    }
+
+    /* Titles and text */
+    h1 {
+        font-size: 2.4em;
+        margin-bottom: 10px;
+    }
+    p {
+        font-size: 1.2em;
+        line-height: 1.5;
+    }
+
+    /* Arrow button */
+    .arrow-btn {
+        background: #007BFF;
+        color: white;
+        border: none;
+        width: 55px;
+        height: 55px;
+        border-radius: 50%;
+        font-size: 1.5em;
+        cursor: pointer;
+        margin-top: 25px;
+        align-self: flex-start;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.3s ease;
+        box-shadow: 0 4px 12px rgba(0, 123, 255, 0.4);
+    }
+    .arrow-btn:hover {
+        transform: scale(1.15);
+        box-shadow: 0 6px 16px rgba(0, 123, 255, 0.6);
+    }
+</style>
+</head>
+<body>
+
+<!-- Progress bar -->
+<div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+
+<!-- Slides -->
+<div id="slides" class="slide-container">
+
+    <!-- Slide 1 -->
+    <div class="slide">
+        <div class="left">
+            <div>
+                <h2>AI PDF Insights</h2>
+                <p>Enterprise-ready AI for instant document understanding.</p>
+            </div>
+        </div>
+        <div class="right">
+            <h1>Upload Any PDF, Get Instant Answers</h1>
+            <p>From contracts to technical manuals, our AI extracts and understands your PDF content instantly — no more searching manually.</p>
+            <button class="arrow-btn" onclick="nextSlide()">➜</button>
+        </div>
+    </div>
+
+    <!-- Slide 2 -->
+    <div class="slide">
+        <div class="left">
+            <div>
+                <h2>Automated Intelligence</h2>
+                <p>Designed for professionals who value speed and accuracy.</p>
+            </div>
+        </div>
+        <div class="right">
+            <h1>How It Works</h1>
+            <p>1. Upload your PDF.<br>
+               2. Our system extracts text using advanced OCR.<br>
+               3. Ask any question — get precise answers from the document.</p>
+            <button class="arrow-btn" onclick="nextSlide()">➜</button>
+        </div>
+    </div>
+
+    <!-- Slide 3 -->
+    <div class="slide">
+        <div class="left">
+            <div>
+                <h2>Productivity Boost</h2>
+                <p>Turn hours of reading into seconds of answers.</p>
+            </div>
+        </div>
+        <div class="right">
+            <h1>Why Choose Us?</h1>
+            <p>✔ Enterprise-level accuracy<br>
+               ✔ Secure document handling<br>
+               ✔ Designed for legal, technical, and corporate teams</p>
+            <button class="arrow-btn" onclick="nextSlide()">➜</button>
+        </div>
+    </div>
+
+    <!-- Slide 4 -->
+    <div class="slide">
+        <div class="left">
+            <div>
+                <h2>Ready to Work Smarter?</h2>
+                <p>Experience the future of document analysis.</p>
+            </div>
+        </div>
+        <div class="right">
+            <h1>Start Now</h1>
+            <p>Upload your first PDF and ask your first question in less than 30 seconds.</p>
+            <button class="arrow-btn" onclick="window.location.href='/app'">➜</button>
+        </div>
+    </div>
+
+</div>
+
+<script>
+let currentSlide = 0;
+const slides = document.getElementById("slides");
+const progressBar = document.getElementById("progress-bar");
+const totalSlides = document.querySelectorAll(".slide").length;
+
+function nextSlide() {
+    currentSlide++;
+    if (currentSlide >= totalSlides) return;
+    slides.style.transform = `translateX(-${currentSlide * 100}%)`;
+    progressBar.style.width = `${(currentSlide / (totalSlides - 1)) * 100}%`;
+}
+</script>
+
+</body>
+</html>
