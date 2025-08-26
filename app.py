@@ -1,74 +1,205 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for
+import os
+from werkzeug.utils import secure_filename
 import pdfplumber
 from pdf2image import convert_from_path
 import pytesseract
-import os
-from werkzeug.utils import secure_filename
+import re
+from datetime import timedelta
 
+# NEW: Google Generative AI
+import google.generativeai as genai
+
+# -------------------------
+# Basic Flask setup
+# -------------------------
 app = Flask(__name__)
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret")
+app.permanent_session_lifetime = timedelta(hours=8)
+
 UPLOAD_FOLDER = "uploads"
+ALLOWED_EXTS = {"pdf"}
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-pdf_text_cache = ""
+# In-memory session cache (OK for dev; use Redis for prod)
+PDF_CACHE = {}
 
-def extract_text_with_pdfplumber(pdf_path):
+# -------------------------
+# Gemini setup
+# -------------------------
+# GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+# if GEMINI_API_KEY:
+   
+# else:
+#     # You can still run the app; /ask will warn if key is missing.
+#     pass
+genai.configure(api_key="AIzaSyCr9aLoO0RBI2kYbKriEwCU9ZetEfLWesg")
+# Choose your model (per your request)
+GEMINI_MODEL_ID = "gemini-2.0-flash"
+
+# Optional tuning
+GENERATION_CONFIG = {
+    "temperature": 0.2,
+    "top_p": 0.9,
+    "top_k": 40,
+    "max_output_tokens": 1024,
+}
+
+# -------------------------
+# Helpers
+# -------------------------
+def allowed_file(filename: str) -> bool:
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTS
+
+def extract_text_with_pdfplumber(pdf_path: str, max_pages: int | None = None) -> str:
     try:
+        parts = []
         with pdfplumber.open(pdf_path) as pdf:
-            text = ""
-            for page in pdf.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text + "\n"
-            return text.strip()
-    except:
+            pages = pdf.pages if max_pages is None else pdf.pages[:max_pages]
+            for page in pages:
+                t = page.extract_text() or ""
+                if t.strip():
+                    parts.append(t)
+        return ("\n".join(parts)).strip()
+    except Exception:
         return ""
 
-def extract_text_with_ocr(pdf_path):
-    images = convert_from_path(pdf_path)
-    ocr_text = ""
-    for image in images:
-        ocr_text += pytesseract.image_to_string(image)
-    return ocr_text.strip()
+def extract_text_with_ocr(pdf_path: str, max_pages: int | None = None) -> str:
+    try:
+        images = convert_from_path(pdf_path)
+        images = images if max_pages is None else images[:max_pages]
+        ocr = []
+        for img in images:
+            ocr.append(pytesseract.image_to_string(img))
+        return ("\n".join(ocr)).strip()
+    except Exception:
+        return ""
 
+def windowed_matches(text: str, query: str, window_chars: int = 300, max_hits: int = 8) -> list[str]:
+    """Small context windows around keyword matches (case-insensitive)."""
+    results = []
+    if not query:
+        return results
+    pattern = re.compile(re.escape(query), re.IGNORECASE)
+    for m in pattern.finditer(text):
+        s = max(0, m.start() - window_chars)
+        e = min(len(text), m.end() + window_chars)
+        results.append(text[s:e].strip())
+        if len(results) >= max_hits:
+            break
+    return results
+
+def build_context(text: str, question: str, hard_cap_chars: int = 20000) -> str:
+    """
+    Keep Gemini prompt small & relevant:
+    1) try keyword windows
+    2) else fall back to first N chars
+    """
+    hits = windowed_matches(text, question, window_chars=400, max_hits=10)
+    if hits:
+        ctx = "\n\n---\n\n".join(hits)
+    else:
+        ctx = text[:hard_cap_chars]
+    return ctx
+
+SYSTEM_INSTRUCTION = (
+    "You are a helpful PDF Q&A assistant. "
+    "Answer STRICTLY using the provided PDF context. "
+    "If the answer is not present in the context, respond: "
+    "\"I couldn't find this in the PDF.\" "
+    "Prefer concise bullet points and include exact values/units when present."
+)
+
+# -------------------------
+# Routes
+# -------------------------
 @app.route("/")
 def home():
-    return render_template("index.html")  # onboarding slideshow
+    return render_template("index.html") if os.path.exists("templates/index.html") else redirect(url_for("pdf_qa_page"))
 
 @app.route("/app")
 def pdf_qa_page():
-    return render_template("pdf_qa.html")  # main PDF Q&A UI
+    return render_template("pdf_qa.html")
 
 @app.route("/upload", methods=["POST"])
 def upload_pdf():
-    global pdf_text_cache
-    file = request.files["pdf"]
-    if file:
-        filename = secure_filename(file.filename)
-        filepath = os.path.join(UPLOAD_FOLDER, filename)
-        file.save(filepath)
+    if "pdf" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
 
-        text = extract_text_with_pdfplumber(filepath)
-        if not text:
-            text = extract_text_with_ocr(filepath)
+    f = request.files["pdf"]
+    if f.filename == "":
+        return jsonify({"error": "No file selected"}), 400
 
-        pdf_text_cache = text
-        return jsonify({"text": text})
-    return jsonify({"error": "No file uploaded"}), 400
+    if not allowed_file(f.filename):
+        return jsonify({"error": "Only .pdf files are allowed"}), 400
+
+    filename = secure_filename(f.filename)
+    filepath = os.path.join(UPLOAD_FOLDER, filename)
+    f.save(filepath)
+
+    # Tip: set max_pages=2 for faster preview; use None for full extraction
+    text = extract_text_with_pdfplumber(filepath, max_pages=None)
+    if not text:
+        text = extract_text_with_ocr(filepath, max_pages=2)
+
+    session.permanent = True
+    sid = session.get("_id") or os.urandom(8).hex()
+    session["_id"] = sid
+    PDF_CACHE[sid] = {"text": text, "path": filepath}
+
+    return jsonify({"text": text})
 
 @app.route("/ask", methods=["POST"])
 def ask_question():
-    global pdf_text_cache
-    data = request.json
-    question = data.get("question", "").lower()
+    data = request.get_json(silent=True) or {}
+    question = (data.get("question") or "").strip()
 
-    if not pdf_text_cache:
+    if not question:
+        return jsonify({"answer": "Please enter a question."})
+
+    sid = session.get("_id")
+    if not sid or sid not in PDF_CACHE or not PDF_CACHE[sid].get("text"):
         return jsonify({"answer": "No PDF uploaded yet."})
 
-    lines = [line for line in pdf_text_cache.split("\n") if question in line.lower()]
-    if lines:
-        return jsonify({"answer": "\n".join(lines[:5])})
-    else:
-        return jsonify({"answer": "I couldn't find relevant information in the PDF."})
+    # if not GEMINI_API_KEY:
+    #     return jsonify({"answer": "Gemini API key not set on server. Set GEMINI_API_KEY and retry."})
 
+    text = PDF_CACHE[sid]["text"]
+
+    # Build a compact, relevant context to save tokens
+    context = build_context(text, question, hard_cap_chars=20000)
+
+    try:
+        model = genai.GenerativeModel(
+            model_name=GEMINI_MODEL_ID,
+            generation_config=GENERATION_CONFIG,
+            system_instruction=SYSTEM_INSTRUCTION,
+        )
+
+        prompt = (
+            "PDF Context:\n"
+            "----------------------------------------\n"
+            f"{context}\n"
+            "----------------------------------------\n\n"
+            f"Question: {question}\n\n"
+            "Answer from the context above."
+        )
+
+        resp = model.generate_content(prompt)
+        answer = (resp.text or "").strip() if resp else ""
+
+        if not answer:
+            answer = "I couldn't find relevant information in the PDF."
+
+        return jsonify({"answer": answer})
+
+    except Exception as e:
+        # Fail safely
+        return jsonify({"answer": f"Error calling Gemini: {type(e).__name__}: {e}"}), 500
+
+# -------------------------
+# Main
+# -------------------------
 if __name__ == "__main__":
-    app.run(debug=True)
+    # Local dev server
+    app.run(debug=True, host="0.0.0.0", port=5000)
