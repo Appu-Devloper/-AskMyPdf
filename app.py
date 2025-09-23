@@ -6,6 +6,8 @@ from pdf2image import convert_from_path
 import pytesseract
 import re
 from datetime import timedelta
+import requests
+import json
 
 # NEW: Google Generative AI
 import google.generativeai as genai
@@ -27,14 +29,7 @@ PDF_CACHE = {}
 # -------------------------
 # Gemini setup
 # -------------------------
-# GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-# if GEMINI_API_KEY:
-   
-# else:
-#     # You can still run the app; /ask will warn if key is missing.
-#     pass
 genai.configure(api_key="AIzaSyCr9aLoO0RBI2kYbKriEwCU9ZetEfLWesg")
-# Choose your model (per your request)
 GEMINI_MODEL_ID = "gemini-2.0-flash"
 
 # Optional tuning
@@ -44,6 +39,12 @@ GENERATION_CONFIG = {
     "top_k": 40,
     "max_output_tokens": 1024,
 }
+
+# -------------------------
+# Ollama setup
+# -------------------------
+OLLAMA_URL = "http://localhost:11434"
+OLLAMA_MODEL = "llama3.1:8b"  # Change this to your preferred model
 
 # -------------------------
 # Helpers
@@ -75,7 +76,7 @@ def extract_text_with_ocr(pdf_path: str, max_pages: int | None = None) -> str:
     except Exception:
         return ""
 
-def windowed_matches(text: str, query: str, window_chars: int = 300, max_hits: int = 8) -> list[str]:
+def windowed_matches(text: str, query: str, window_chars: int = 200, max_hits: int = 4) -> list[str]:
     """Small context windows around keyword matches (case-insensitive)."""
     results = []
     if not query:
@@ -89,9 +90,9 @@ def windowed_matches(text: str, query: str, window_chars: int = 300, max_hits: i
             break
     return results
 
-def build_context(text: str, question: str, hard_cap_chars: int = 20000) -> str:
+def build_context(text: str, question: str, hard_cap_chars: int = 5000) -> str:
     """
-    Keep Gemini prompt small & relevant:
+    Keep prompt small & relevant:
     1) try keyword windows
     2) else fall back to first N chars
     """
@@ -101,6 +102,46 @@ def build_context(text: str, question: str, hard_cap_chars: int = 20000) -> str:
     else:
         ctx = text[:hard_cap_chars]
     return ctx
+
+def query_ollama(question: str, context: str) -> str:
+    """Query Ollama local model"""
+    try:
+        prompt = (
+            "You are a helpful PDF Q&A assistant. "
+            "Answer STRICTLY using the provided PDF context. "
+            "If the answer is not present in the context, respond: "
+            "\"I couldn't find this in the PDF.\" "
+            "Prefer concise bullet points and include exact values/units when present.\n\n"
+            f"PDF Context:\n{context}\n\n"
+            f"Question: {question}\n\n"
+            "Answer from the context above:"
+        )
+        
+        response = requests.post(
+            f"{OLLAMA_URL}/api/generate",
+            json={
+                "model": OLLAMA_MODEL,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": 0.2,
+                    "top_p": 0.9,
+                    "max_tokens": 1024
+                }
+            },
+            timeout=100
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            return result.get("response", "").strip()
+        else:
+            return f"Ollama error: {response.status_code}"
+            
+    except requests.exceptions.ConnectionError:
+        return "Ollama server not running. Please start Ollama on localhost:11434"
+    except Exception as e:
+        return f"Ollama error: {str(e)}"
 
 SYSTEM_INSTRUCTION = (
     "You are a helpful PDF Q&A assistant. "
@@ -153,6 +194,7 @@ def upload_pdf():
 def ask_question():
     data = request.get_json(silent=True) or {}
     question = (data.get("question") or "").strip()
+    model_choice = data.get("model", "gemini")  # Default to Gemini
 
     if not question:
         return jsonify({"answer": "Please enter a question."})
@@ -161,32 +203,34 @@ def ask_question():
     if not sid or sid not in PDF_CACHE or not PDF_CACHE[sid].get("text"):
         return jsonify({"answer": "No PDF uploaded yet."})
 
-    # if not GEMINI_API_KEY:
-    #     return jsonify({"answer": "Gemini API key not set on server. Set GEMINI_API_KEY and retry."})
-
     text = PDF_CACHE[sid]["text"]
 
     # Build a compact, relevant context to save tokens
     context = build_context(text, question, hard_cap_chars=20000)
 
     try:
-        model = genai.GenerativeModel(
-            model_name=GEMINI_MODEL_ID,
-            generation_config=GENERATION_CONFIG,
-            system_instruction=SYSTEM_INSTRUCTION,
-        )
+        if model_choice == "ollama":
+            # Use Ollama local model
+            answer = query_ollama(question, context)
+        else:
+            # Use Gemini (default)
+            model = genai.GenerativeModel(
+                model_name=GEMINI_MODEL_ID,
+                generation_config=GENERATION_CONFIG,
+                system_instruction=SYSTEM_INSTRUCTION,
+            )
 
-        prompt = (
-            "PDF Context:\n"
-            "----------------------------------------\n"
-            f"{context}\n"
-            "----------------------------------------\n\n"
-            f"Question: {question}\n\n"
-            "Answer from the context above."
-        )
+            prompt = (
+                "PDF Context:\n"
+                "----------------------------------------\n"
+                f"{context}\n"
+                "----------------------------------------\n\n"
+                f"Question: {question}\n\n"
+                "Answer from the context above."
+            )
 
-        resp = model.generate_content(prompt)
-        answer = (resp.text or "").strip() if resp else ""
+            resp = model.generate_content(prompt)
+            answer = (resp.text or "").strip() if resp else ""
 
         if not answer:
             answer = "I couldn't find relevant information in the PDF."
@@ -195,7 +239,30 @@ def ask_question():
 
     except Exception as e:
         # Fail safely
-        return jsonify({"answer": f"Error calling Gemini: {type(e).__name__}: {e}"}), 500
+        return jsonify({"answer": f"Error calling {model_choice}: {type(e).__name__}: {e}"}), 500
+
+@app.route("/health")
+def health_check():
+    """Health check for Ollama"""
+    try:
+        response = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
+        if response.status_code == 200:
+            models = response.json().get("models", [])
+            return jsonify({
+                "ollama_running": True,
+                "available_models": [model["name"] for model in models],
+                "status": "healthy"
+            })
+        else:
+            return jsonify({
+                "ollama_running": False,
+                "status": "Ollama not responding"
+            })
+    except:
+        return jsonify({
+            "ollama_running": False,
+            "status": "Cannot connect to Ollama"
+        })
 
 # -------------------------
 # Main
